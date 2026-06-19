@@ -1,0 +1,6 @@
+{
+  "name": "Indian Law & Order Chatbot",
+  "description": "An AI-powered legal assistant providing grounded answers on Indian Penal Code (IPC/BNS), CrPC/BNSS, cyber law, traffic rules, and consumer rights with verified legal references.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

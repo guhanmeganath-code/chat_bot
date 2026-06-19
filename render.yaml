@@ -1,6 +1,6 @@
 services:
   - type: web
-    name: indian-law-order-chatbot
+    name: lawbot
     env: node
     plan: free
     buildCommand: npm ci && npm run build
