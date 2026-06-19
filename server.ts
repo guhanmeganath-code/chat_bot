@@ -56,8 +56,13 @@ async function startServer() {
   app.use(
     cors({
       origin: (origin, callback) => {
-        // Allow same-origin and requests from allowed range
-        if (!origin || origin.startsWith("http://localhost:") || allowedOrigins.includes(origin)) {
+        // Allow same-origin, localhost, .onrender.com, and explicitly allowed origins
+        if (
+          !origin ||
+          origin.startsWith("http://localhost:") ||
+          origin.includes(".onrender.com") ||
+          allowedOrigins.includes(origin)
+        ) {
           callback(null, true);
         } else {
           callback(new Error("Not allowed by CORS"));
