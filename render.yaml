@@ -3,7 +3,7 @@ services:
     name: lawbot
     env: node
     plan: free
-    buildCommand: npm ci && npm run build
+    buildCommand: npm ci && npm run build && cp node_modules/sql.js/dist/sql-wasm.wasm dist/sql-wasm.wasm
     startCommand: npm start
     envVars:
       - key: NODE_ENV

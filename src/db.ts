@@ -1,75 +1,33 @@
-import sqlite3 from "sqlite3";
+import initSqlJs, { Database } from "sql.js";
+import fs from "fs";
 import path from "path";
 import { INDIAN_LAW_CORPUS } from "./seed_data.js";
 
 const dbPath = path.resolve(process.cwd(), "database.db");
 
-// Custom promise wrapper for sqlite3 Database
-export class SQLiteDatabase {
-  private db: sqlite3.Database | null = null;
-
-  constructor() {
-    // Open SQLite database
-    this.db = new sqlite3.Database(dbPath, (err) => {
-      if (err) {
-        console.error("Failed to open SQLite database:", err.message);
-      } else {
-        console.log("Connected to SQLite database at:", dbPath);
-      }
-    });
+// Locate the sql-wasm.wasm file (works in both dev and production builds)
+function findWasmFile(): Uint8Array | undefined {
+  const candidates = [
+    path.join(process.cwd(), "dist", "sql-wasm.wasm"),    // production: in dist/
+    path.join(process.cwd(), "node_modules", "sql.js", "dist", "sql-wasm.wasm"), // dev: in node_modules
+  ];
+  for (const candidate of candidates) {
+    if (fs.existsSync(candidate)) {
+      return fs.readFileSync(candidate);
+    }
   }
-
-  // Helper to run query with no results returned (INSERT, UPDATE, CREATE TABLE)
-  run(sql: string, params: any[] = []): Promise<void> {
-    return new Promise((resolve, reject) => {
-      this.db?.run(sql, params, function (this: sqlite3.RunResult, err) {
-        if (err) {
-          reject(err);
-        } else {
-          resolve();
-        }
-      });
-    });
-  }
-
-  // Helper to get a single row
-  get<T>(sql: string, params: any[] = []): Promise<T | undefined> {
-    return new Promise((resolve, reject) => {
-      this.db?.get(sql, params, (err, row) => {
-        if (err) {
-          reject(err);
-        } else {
-          resolve(row as T);
-        }
-      });
-    });
-  }
-
-  // Helper to get all rows
-  all<T>(sql: string, params: any[] = []): Promise<T[]> {
-    return new Promise((resolve, reject) => {
-      this.db?.all(sql, params, (err, rows) => {
-        if (err) {
-          reject(err);
-        } else {
-          resolve(rows as T[]);
-        }
-      });
-    });
-  }
-
-  close(): Promise<void> {
-    return new Promise((resolve, reject) => {
-      this.db?.close((err) => {
-        if (err) reject(err);
-        else resolve();
-      });
-    });
-  }
+  return undefined;
 }
 
-// Global Singleton Instance
-export const db = new SQLiteDatabase();
+// Global database reference (set after async init)
+let db: Database;
+
+// Helper: save the in-memory database to disk
+function saveToDisk(): void {
+  const data = db.export();
+  const buffer = Buffer.from(data);
+  fs.writeFileSync(dbPath, buffer);
+}
 
 export interface DbSession {
   id: string;
@@ -80,7 +38,7 @@ export interface DbChat {
   id: number;
   session_id: string;
   user_message: string;
-  bot_response: string; // Stored as a raw / stringified JSON string
+  bot_response: string;
   confidence: "grounded" | "general";
   timestamp: string;
 }
@@ -94,20 +52,33 @@ export interface DbLawSection {
   keywords: string;
 }
 
-// Initializer to bootstrap SQLite schema and seed Indian law corpus safely
+// Initializer: load existing DB from disk or create new one, then bootstrap schema
 export async function initDb(): Promise<void> {
+  console.log("Initializing database...");
+
+  const wasmBinary = findWasmFile();
+  const SQL = await initSqlJs(wasmBinary ? { wasmBinary } : {});
+
+  // Load existing database file if it exists
+  if (fs.existsSync(dbPath)) {
+    const fileBuffer = fs.readFileSync(dbPath);
+    db = new SQL.Database(fileBuffer);
+    console.log("Loaded existing SQLite database at:", dbPath);
+  } else {
+    db = new SQL.Database();
+    console.log("Created new in-memory SQLite database");
+  }
+
   console.log("Initializing database tables...");
 
-  // 1. Create sessions table
-  await db.run(`
+  db.run(`
     CREATE TABLE IF NOT EXISTS sessions (
       id TEXT PRIMARY KEY,
       created_at DATETIME DEFAULT CURRENT_TIMESTAMP
     )
   `);
 
-  // 2. Create chats table mapped to sessions
-  await db.run(`
+  db.run(`
     CREATE TABLE IF NOT EXISTS chats (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       session_id TEXT,
@@ -119,8 +90,7 @@ export async function initDb(): Promise<void> {
     )
   `);
 
-  // 3. Create law_sections table
-  await db.run(`
+  db.run(`
     CREATE TABLE IF NOT EXISTS law_sections (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       act TEXT,
@@ -131,33 +101,38 @@ export async function initDb(): Promise<void> {
     )
   `);
 
-  // Check if we already have seed data in law_sections
-  const countRow = await db.get<{ count: number }>("SELECT COUNT(*) as count FROM law_sections");
-  if (countRow && countRow.count === 0) {
+  // Check if we already have seed data
+  const countResult = db.exec("SELECT COUNT(*) as count FROM law_sections");
+  const count = countResult.length > 0 ? (countResult[0].values[0][0] as number) : 0;
+
+  if (count === 0) {
     console.log("Seeding Indian law corpus reference definitions...");
+    const stmt = db.prepare(
+      "INSERT INTO law_sections (act, section_number, title, summary, keywords) VALUES (?, ?, ?, ?, ?)"
+    );
     for (const section of INDIAN_LAW_CORPUS) {
-      await db.run(
-        `INSERT INTO law_sections (act, section_number, title, summary, keywords) VALUES (?, ?, ?, ?, ?)`,
-        [section.act, section.section_number, section.title, section.summary, section.keywords]
-      );
+      stmt.run([section.act, section.section_number, section.title, section.summary, section.keywords]);
     }
+    stmt.free();
     console.log(`Seeded ${INDIAN_LAW_CORPUS.length} common law sections successfully.`);
+    saveToDisk();
   } else {
-    console.log(`Law sections table count check: ${countRow?.count || 0} items already exist.`);
+    console.log(`Law sections table count check: ${count} items already exist.`);
   }
 }
 
-// Create a new session with custom or UUID format
+// Create a new session
 export async function createSession(customId?: string): Promise<string> {
   const sessionId = customId || `sess_${Math.random().toString(36).substring(2, 15)}_${Date.now().toString(36)}`;
-  await db.run("INSERT INTO sessions (id) VALUES (?)", [sessionId]);
+  db.run("INSERT INTO sessions (id) VALUES (?)", [sessionId]);
+  saveToDisk();
   return sessionId;
 }
 
 // Validate if session exists
 export async function validateSession(sessionId: string): Promise<boolean> {
-  const session = await db.get<DbSession>("SELECT id FROM sessions WHERE id = ?", [sessionId]);
-  return !!session;
+  const result = db.exec("SELECT id FROM sessions WHERE id = ?", [sessionId]);
+  return result.length > 0 && result[0].values.length > 0;
 }
 
 // Store a single exchange
@@ -167,15 +142,16 @@ export async function saveChat(
   botResponseJson: string,
   confidence: "grounded" | "general"
 ): Promise<void> {
-  await db.run(
-    `INSERT INTO chats (session_id, user_message, bot_response, confidence) VALUES (?, ?, ?, ?)`,
+  db.run(
+    "INSERT INTO chats (session_id, user_message, bot_response, confidence) VALUES (?, ?, ?, ?)",
     [sessionId, userMessage, botResponseJson, confidence]
   );
+  saveToDisk();
 }
 
-// Retrieve paginated historical chat list reversed / chronologically sorted
+// Retrieve paginated historical chat list
 export async function getHistory(sessionId: string, limit: number = 20, offset: number = 0): Promise<DbChat[]> {
-  return db.all<DbChat>(
+  const result = db.exec(
     `SELECT id, session_id, user_message, bot_response, confidence, timestamp 
      FROM chats 
      WHERE session_id = ? 
@@ -183,24 +159,43 @@ export async function getHistory(sessionId: string, limit: number = 20, offset: 
      LIMIT ? OFFSET ?`,
     [sessionId, limit, offset]
   );
+
+  if (result.length === 0) return [];
+
+  const columns = result[0].columns;
+  return result[0].values.map((row) => {
+    const obj: any = {};
+    columns.forEach((col, i) => {
+      obj[col] = row[i];
+    });
+    return obj as DbChat;
+  });
 }
 
-// Search Grounding Corpus using a flexible keywords ranking
+// Search Grounding Corpus using flexible keywords ranking
 export async function searchLawSections(query: string): Promise<DbLawSection[]> {
   if (!query || query.trim() === "") return [];
 
-  // Parse terms to search against keywords & summaries
   const terms = query
     .toLowerCase()
     .replace(/[^\w\s]/g, " ")
     .split(/\s+/)
-    .filter((term) => term.length > 2); // Filter out tiny words like is, an, to, etc.
+    .filter((term) => term.length > 2);
 
   if (terms.length === 0) return [];
 
-  const allSections = await db.all<DbLawSection>("SELECT * FROM law_sections");
+  const result = db.exec("SELECT * FROM law_sections");
+  if (result.length === 0) return [];
 
-  // Multi-term dynamic keyword matcher ranking
+  const columns = result[0].columns;
+  const allSections: DbLawSection[] = result[0].values.map((row) => {
+    const obj: any = {};
+    columns.forEach((col, i) => {
+      obj[col] = row[i];
+    });
+    return obj as DbLawSection;
+  });
+
   const results = allSections.map((section) => {
     let score = 0;
     const targets = [
@@ -214,9 +209,9 @@ export async function searchLawSections(query: string): Promise<DbLawSection[]> 
     terms.forEach((term) => {
       targets.forEach((target, index) => {
         let weight = 1;
-        if (index === 0) weight = 4; // Title match
-        if (index === 3) weight = 5; // Section Code match
-        if (index === 2) weight = 2; // Keyword list match
+        if (index === 0) weight = 4;
+        if (index === 3) weight = 5;
+        if (index === 2) weight = 2;
 
         if (target.includes(term)) {
           score += weight;
@@ -227,7 +222,6 @@ export async function searchLawSections(query: string): Promise<DbLawSection[]> 
     return { section, score };
   });
 
-  // Sort and filter out non-matching rows, return top 4 matches
   return results
     .filter((v) => v.score > 0)
     .sort((a, b) => b.score - a.score)
