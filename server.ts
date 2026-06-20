@@ -45,8 +45,8 @@ async function startServer() {
   const app = express();
   const PORT = Number(process.env.PORT) || 3000;
 
-  // Use JSON middleware
-  app.use(express.json());
+  // Use JSON middleware (increased limit for file uploads)
+  app.use(express.json({ limit: "10mb" }));
 
   // Restrict CORS based on environment
   const allowedOrigins = (process.env.ALLOWED_ORIGINS || "http://localhost:5173")
@@ -151,7 +151,7 @@ async function startServer() {
   // API Route: Law Chat with Retrieval Grounding
   app.post("/api/chat", async (req, res) => {
     try {
-      const { session_id, message } = req.body;
+      const { session_id, message, file } = req.body;
 
       if (!session_id) {
         res.status(400).json({ error: "session_id is required." });
@@ -167,6 +167,30 @@ async function startServer() {
       if (message.length > 1000) {
         res.status(400).json({ error: "Your inquiry exceeds the limit of 1000 characters." });
         return;
+      }
+
+      // Validate file attachment if present
+      const ALLOWED_MIME_TYPES = [
+        "application/pdf",
+        "image/jpeg", "image/png", "image/webp",
+        "text/plain", "text/csv",
+        "application/msword",
+        "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+      ];
+      if (file) {
+        if (!file.base64 || !file.mimeType || !file.name) {
+          res.status(400).json({ error: "Invalid file attachment. Must include base64, mimeType, and name." });
+          return;
+        }
+        if (!ALLOWED_MIME_TYPES.includes(file.mimeType)) {
+          res.status(400).json({ error: `Unsupported file type: ${file.mimeType}. Allowed: PDF, images (JPG/PNG/WebP), text files, Word docs.` });
+          return;
+        }
+        // 5MB base64 limit (~3.75MB raw)
+        if (file.base64.length > 5 * 1024 * 1024) {
+          res.status(400).json({ error: "File too large. Maximum size is 5MB." });
+          return;
+        }
       }
 
       // Rate limit check
@@ -231,17 +255,28 @@ If the request violates any of these rules or asks for illegal/evasive activitie
 }`;
 
       // Assemble final prompt for Gemini
-      const prompt = `User's Legal Query: ${message}
+      const textPrompt = `User's Legal Query: ${message}
+${file ? `\nAttached File: "${file.name}" (${file.mimeType})\nThe user has uploaded a document/file. Please analyze its contents and answer their question about it in the context of Indian Law.` : ""}
 
 Grounding Context Excerpts (Use for Grounding Sections):
 ${retrievedContext}
 
 Provide your structured JSON response conforming strictly to the requested schema.`;
 
+      // Build contents: multimodal if file is attached, plain text otherwise
+      const contents: any = file
+        ? {
+            parts: [
+              { text: textPrompt },
+              { inlineData: { mimeType: file.mimeType, data: file.base64 } },
+            ],
+          }
+        : textPrompt;
+
       // Step 3: Call the server-side Gemini API securely (uses gemini-3.5-flash as default)
       const rawResponse = await ai.models.generateContent({
         model: "gemini-3.5-flash",
-        contents: prompt,
+        contents,
         config: {
           systemInstruction: systemInstruction,
           responseMimeType: "application/json",

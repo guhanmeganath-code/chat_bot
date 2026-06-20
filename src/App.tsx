@@ -6,7 +6,7 @@
 import { useState, useEffect } from "react";
 import LandingPage from "./components/LandingPage";
 import ChatInterface from "./components/ChatInterface";
-import { Language, Message, ChatSession } from "./types";
+import { Language, Message, ChatSession, FileAttachment } from "./types";
 
 export default function App() {
   const [view, setView] = useState<"landing" | "chat">("landing");
@@ -172,7 +172,7 @@ export default function App() {
   };
 
   // Submit legal query with dynamic loading states
-  const submitInquiryMessage = async (text: string) => {
+  const submitInquiryMessage = async (text: string, file?: FileAttachment) => {
     if (!sessionId) {
       throw new Error("Active statutory consultation session is not configured.");
     }
@@ -184,6 +184,7 @@ export default function App() {
       role: "user",
       raw_text: text,
       timestamp: new Date().toISOString(),
+      file,
     };
 
     // Stagger user bubble inside the view feed
@@ -197,6 +198,7 @@ export default function App() {
         body: JSON.stringify({
           session_id: sessionId,
           message: text,
+          file: file || undefined,
         }),
       });
 

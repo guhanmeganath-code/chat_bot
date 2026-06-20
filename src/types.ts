@@ -8,6 +8,12 @@ export interface BotResponse {
   confidence: "grounded" | "general";
 }
 
+export interface FileAttachment {
+  name: string;
+  mimeType: string;
+  base64: string; // base64-encoded file content (no data: prefix)
+}
+
 export interface Message {
   id: string;
   role: "user" | "bot";
@@ -15,6 +21,7 @@ export interface Message {
   bot_response?: BotResponse; // structured response loaded for chatbot rendering
   confidence?: "grounded" | "general";
   timestamp: string;
+  file?: FileAttachment; // optional uploaded file
 }
 
 export interface ChatSession {

@@ -14,9 +14,12 @@ import {
   MicOff, 
   Moon, 
   Sun,
-  Loader2
+  Loader2,
+  Paperclip,
+  X,
+  FileText
 } from "lucide-react";
-import { TRANSLATIONS, Language, Message, ChatSession, BotResponse } from "../types.js";
+import { TRANSLATIONS, Language, Message, ChatSession, BotResponse, FileAttachment } from "../types.js";
 
 interface ChatInterfaceProps {
   language: Language;
@@ -26,7 +29,7 @@ interface ChatInterfaceProps {
   isDarkMode: boolean;
   onSetLanguage: (lang: Language) => void;
   onToggleTheme: () => void;
-  onSubmitMessage: (text: string) => Promise<void>;
+  onSubmitMessage: (text: string, file?: FileAttachment) => Promise<void>;
   onNewChat: () => Promise<void>;
   onSelectSession: (id: string) => Promise<void>;
   onBackToHome: () => void;
@@ -53,8 +56,10 @@ export default function ChatInterface({
   const [inputValue, setInputValue] = useState("");
   const [isListening, setIsListening] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  const [attachedFile, setAttachedFile] = useState<FileAttachment | null>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const chatInputRef = useRef<HTMLInputElement>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
 
   // Web Speech API reference
   const recognitionRef = useRef<any>(null);
@@ -138,6 +143,43 @@ export default function ChatInterface({
     }
   };
 
+  // File upload handler
+  const handleFileSelect = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    // Validate size (5MB)
+    if (file.size > 5 * 1024 * 1024) {
+      setErrorMessage("File too large. Maximum size is 5MB.");
+      return;
+    }
+
+    // Validate type
+    const allowedTypes = [
+      "application/pdf",
+      "image/jpeg", "image/png", "image/webp",
+      "text/plain", "text/csv",
+      "application/msword",
+      "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    ];
+    if (!allowedTypes.includes(file.type)) {
+      setErrorMessage("Unsupported file type. Allowed: PDF, images (JPG/PNG/WebP), text files, Word docs.");
+      return;
+    }
+
+    // Convert to base64
+    const reader = new FileReader();
+    reader.onload = () => {
+      const base64 = (reader.result as string).split(",")[1]; // strip data:... prefix
+      setAttachedFile({ name: file.name, mimeType: file.type, base64 });
+    };
+    reader.onerror = () => setErrorMessage("Failed to read file.");
+    reader.readAsDataURL(file);
+
+    // Reset input so the same file can be re-selected
+    e.target.value = "";
+  };
+
   const handleSend = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!inputValue.trim() || isGenerating) return;
@@ -148,11 +190,13 @@ export default function ChatInterface({
     }
 
     const textToSend = inputValue;
+    const fileToSend = attachedFile;
     setInputValue("");
+    setAttachedFile(null);
     setErrorMessage(null);
 
     try {
-      await onSubmitMessage(textToSend);
+      await onSubmitMessage(textToSend, fileToSend || undefined);
     } catch (err: any) {
       setErrorMessage(err.message || "Failed to submit legal consultation inquiry.");
     }
@@ -419,6 +463,12 @@ export default function ChatInterface({
                         : "bg-[#1E3A8A] text-white border-blue-800"
                     }`}>
                       <span className="text-xs leading-relaxed whitespace-pre-wrap">{msg.raw_text}</span>
+                      {msg.file && (
+                        <div className="mt-2 flex items-center space-x-1.5 bg-white/10 rounded-lg px-2 py-1">
+                          <FileText className="h-3 w-3 flex-shrink-0" />
+                          <span className="text-[10px] truncate">{msg.file.name}</span>
+                        </div>
+                      )}
                       <div className="text-[8px] opacity-70 text-right mt-1 font-mono">
                         {new Date(msg.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
                       </div>
@@ -592,7 +642,28 @@ export default function ChatInterface({
             ? "bg-gradient-to-t from-[#111827] to-transparent border-white/5" 
             : "bg-white border-gray-200"
         }`}>
-          <form onSubmit={handleSend} className="max-w-4xl mx-auto flex items-center space-x-3">
+          <form onSubmit={handleSend} className="max-w-4xl mx-auto space-y-2">
+            
+            {/* Attached file preview bar */}
+            {attachedFile && (
+              <div className={`flex items-center space-x-2 px-4 py-2 rounded-xl border ${
+                isDarkMode ? "bg-white/5 border-white/10" : "bg-gray-50 border-gray-200"
+              }`}>
+                <FileText className="h-4 w-4 text-[#D4AF37] flex-shrink-0" />
+                <span className="text-xs flex-1 truncate">{attachedFile.name}</span>
+                <span className="text-[9px] text-gray-400 font-mono">{attachedFile.mimeType.split("/")[1]?.toUpperCase()}</span>
+                <button
+                  type="button"
+                  onClick={() => setAttachedFile(null)}
+                  className="p-1 rounded-full hover:bg-red-500/20 text-gray-400 hover:text-red-400 transition-colors"
+                  title="Remove attachment"
+                >
+                  <X className="h-3.5 w-3.5" />
+                </button>
+              </div>
+            )}
+
+            <div className="flex items-center space-x-3">
             
             {/* Input wrap pill */}
             <div className={`flex-1 flex items-center border rounded-2xl px-5 py-2.5 transition-all shadow-xl ${
@@ -619,6 +690,28 @@ export default function ChatInterface({
                   </span>
                 )}
 
+                {/* File attachment button */}
+                <button
+                  type="button"
+                  onClick={() => fileInputRef.current?.click()}
+                  disabled={isGenerating}
+                  className={`p-2 rounded-full cursor-pointer transition-colors ${
+                    attachedFile
+                      ? "bg-[#D4AF37] text-[#0B1F3A]"
+                      : isDarkMode ? "text-gray-400 hover:text-white hover:bg-white/5" : "text-gray-500 hover:text-black hover:bg-gray-200"
+                  }`}
+                  title="Attach case file (PDF, image, text)"
+                >
+                  <Paperclip className="h-4 w-4" />
+                </button>
+                <input
+                  ref={fileInputRef}
+                  type="file"
+                  accept=".pdf,.jpg,.jpeg,.png,.webp,.txt,.csv,.doc,.docx"
+                  onChange={handleFileSelect}
+                  className="hidden"
+                />
+
                 {/* Web Speech Dictation Mic Trigger toggle */}
                 <button
                   type="button"
@@ -643,6 +736,7 @@ export default function ChatInterface({
             >
               <Send className="h-4 w-4 font-bold" />
             </button>
+            </div>
           </form>
 
           {/* Under-input disclaimer footer */}
