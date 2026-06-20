@@ -36,10 +36,18 @@ export default function App() {
         }
       }
 
-      // If we have an existing session, load its history
+      // If we have an existing session, validate it; otherwise create new
       if (storedSessionId) {
-        setSessionId(storedSessionId);
-        await triggerHistoryFetch(storedSessionId);
+        const valid = await validateSessionOnServer(storedSessionId);
+        if (valid) {
+          setSessionId(storedSessionId);
+          await triggerHistoryFetch(storedSessionId);
+        } else {
+          // Session expired (server likely restarted) — create fresh one
+          console.warn("Stored session expired, creating new session.");
+          localStorage.removeItem("lawbot_current_session_id");
+          await triggerNewSessionCreation(activeSessions);
+        }
       } else {
         // Create a default session on boot so chatbot is ready
         await triggerNewSessionCreation(activeSessions);
@@ -60,6 +68,16 @@ export default function App() {
       body.style.backgroundColor = "#F9FAFB"; // matches legal-bg
     }
   }, [isDarkMode]);
+
+  // Validate whether the server still knows about a given session
+  const validateSessionOnServer = async (sessId: string): Promise<boolean> => {
+    try {
+      const response = await fetch(`/api/history?session_id=${encodeURIComponent(sessId)}&limit=1`);
+      return response.ok;
+    } catch {
+      return false;
+    }
+  };
 
   // Create a brand new session mapping to backend SQLite
   const triggerNewSessionCreation = async (existingList: ChatSession[] = sessionsList) => {
@@ -184,6 +202,36 @@ export default function App() {
 
       if (!response.ok) {
         const errorData = await response.json();
+
+        // If session expired on server, auto-create a new one and retry
+        if (response.status === 404) {
+          console.warn("Session expired mid-chat, creating new session and retrying...");
+          await triggerNewSessionCreation();
+          // Retry with the freshly created session
+          const retryResponse = await fetch("/api/chat", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              session_id: localStorage.getItem("lawbot_current_session_id"),
+              message: text,
+            }),
+          });
+          if (!retryResponse.ok) {
+            const retryError = await retryResponse.json();
+            throw new Error(retryError.error || "Retry failed after session recovery.");
+          }
+          const retryOutput = await retryResponse.json();
+          const retryBotMsg: Message = {
+            id: `temp-bot-${Date.now()}`,
+            role: "bot",
+            bot_response: retryOutput,
+            confidence: retryOutput.confidence,
+            timestamp: new Date().toISOString(),
+          };
+          setHistory((prev) => [...prev, retryBotMsg]);
+          return;
+        }
+
         throw new Error(errorData.error || "The legal network experienced a processing issue.");
       }
 
